@@ -119,7 +119,18 @@ impl Assets {
             let trans = if s["bind"].is_object() {
                 let bind = &s["bind"];
                 let source = pair(&s["sourcePosition"]);
-                b * Mat4::from_rotation_z(-num(bind, "a"))
+                // Fixed attachment proportions in bone space; never driven by motion.
+                let fit = s["bindScale"]
+                    .as_array()
+                    .map(|_| pair(&s["bindScale"]))
+                    .unwrap_or([1.; 2]);
+                anyhow::ensure!(
+                    fit.iter()
+                        .all(|v| v.is_finite() && v.abs() >= 0.01 && v.abs() <= 10.),
+                    "invalid attachment fit"
+                );
+                b * Mat4::from_scale(Vec3::new(fit[0], fit[1], 1.))
+                    * Mat4::from_rotation_z(-num(bind, "a"))
                     * Mat4::from_translation(Vec3::new(-num(bind, "x"), -num(bind, "y"), 0.))
                     * Mat4::from_translation(Vec3::new(
                         source[0] + num(s, "x"),

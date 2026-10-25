@@ -41,3 +41,9 @@ of the default full image quad; it does not repaint or resample the source image
 This allows an extracted prop to exclude surrounding background scraps. Keep the
 existing desk backing beneath any pixels that were previously part of a rectangular
 prop cutout. `sourceRect` still selects a source region before UVs are applied.
+
+Bound sprite slots may also specify `bindScale: [x, y]` for fixed artwork fitting
+in the owning bone's coordinate system. Negative X mirrors an attachment. The fit
+is applied when creating the mesh; pose updates only rigidly rotate/translate it.
+This lets both forearms share one gauntlet image while fitting their different
+rest lengths, without additional armor pieces or pose-dependent stretching.

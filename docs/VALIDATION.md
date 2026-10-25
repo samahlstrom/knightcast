@@ -124,3 +124,10 @@ rectangular cutout below it. Source PNGs remain unchanged. Brows are 24% wider,
 0.16 model units higher and pure black, with a stronger opacity response. The brow
 geometry test, strict Clippy and release build passed; isolated synthetic-input
 renders verified these changes without injecting events into the live hub.
+
+The subsequent simplification removes the extra mouse wrist plate. Both arms now
+have the same eight main arm/hand slots (excluding individual fingers), with one
+gauntlet each. They share the keyboard gauntlet artwork; the mouse attachment is
+mirrored and fitted once to its forearm length, then moved closer to the wrist for
+overlap. Neutral, full inward bend and outward-reach previews were checked. The
+keyboard trim and eyebrow improvements remain in place. Source art is unchanged.
