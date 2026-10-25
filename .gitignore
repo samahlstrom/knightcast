@@ -1,0 +1,15 @@
+/target/
+/artifacts/
+/.local/
+__pycache__/
+*.pyc
+.env
+.env.*
+*.glb
+*.gltf
+*.blend
+*.blend1
+*.onnx
+*.safetensors
+*.mp4
+*.webm
