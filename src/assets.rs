@@ -139,7 +139,29 @@ impl Assets {
             let pivot = pair(&s["pivot"]);
             let w = num(s, "width");
             let h = num(s, "height");
-            let vertices = [[0., 0.], [1., 0.], [1., 1.], [0., 1.]]
+            // Optional convex cutout trims captured background scraps without
+            // repainting or resampling the approved sprite pixels.
+            let outline: Vec<[f32; 2]> = if let Some(points) = asset["convexOutline"].as_array() {
+                anyhow::ensure!(
+                    (3..=128).contains(&points.len()),
+                    "invalid convex sprite outline"
+                );
+                let points: Vec<_> = points.iter().map(pair).collect();
+                anyhow::ensure!(
+                    points
+                        .iter()
+                        .flatten()
+                        .all(|v| v.is_finite() && (0. ..=1.).contains(v)),
+                    "outline UV outside sprite"
+                );
+                points
+            } else {
+                vec![[0., 0.], [1., 0.], [1., 1.], [0., 1.]]
+            };
+            let indices: Vec<u32> = (1..outline.len() - 1)
+                .flat_map(|i| [0, i as u32, i as u32 + 1])
+                .collect();
+            let vertices = outline
                 .into_iter()
                 .map(|uv| {
                     let p = trans.transform_point3(Vec3::new(
@@ -160,7 +182,7 @@ impl Assets {
                 .collect();
             out.meshes.push(Mesh {
                 vertices,
-                indices: vec![0, 1, 2, 0, 2, 3],
+                indices,
                 texture,
                 part: Part::Body,
                 double_sided: true,
@@ -420,11 +442,11 @@ pub fn brow_transform(side: usize, wide: f32) -> Option<(Mat4, f32)> {
         return None;
     }
     let anchor = eye_anchor(side);
-    let position = anchor + Vec3::new(0., 0.33 + 0.13 + 0.12 * level, 0.02);
+    let position = anchor + Vec3::new(0., 0.33 + 0.29 + 0.12 * level, 0.02);
     let yaw = (anchor.x / 2.06).clamp(-1., 1.).asin();
     Some((
         Mat4::from_translation(position) * Mat4::from_rotation_y(yaw),
-        level,
+        level.sqrt(),
     ))
 }
 fn effect_mesh(vertices: Vec<Vertex>, indices: Vec<u32>, part: Part) -> Mesh {
@@ -476,11 +498,11 @@ fn eye_effect_meshes() -> Vec<Mesh> {
     indices.clear();
     // Quadratic control point height .16 gives a curve peak of .08. The tube
     // follows the original 20-segment/6-sided geometry; user requested thicker ink brows.
-    let ink = [0.0033465358, 0.0051815165, 0.0065120906, 1.];
+    let ink = [0., 0., 0., 1.];
     for segment in 0..=20 {
         let t = segment as f32 / 20.;
-        let center = Vec3::new(-0.25 + 0.5 * t, 0.32 * t * (1. - t), 0.);
-        let tangent = Vec3::new(0.5, 0.32 * (1. - 2. * t), 0.).normalize();
+        let center = Vec3::new(-0.31 + 0.62 * t, 0.32 * t * (1. - t), 0.);
+        let tangent = Vec3::new(0.62, 0.32 * (1. - 2. * t), 0.).normalize();
         let in_plane = Vec3::new(-tangent.y, tangent.x, 0.);
         for radial in 0..=6 {
             let angle = std::f32::consts::TAU * radial as f32 / 6.;
@@ -576,6 +598,13 @@ mod eye_effect_tests {
                     assert!((delta - rotation * Vec3::Z * *depth).length() < 0.00001);
                     let local = rotation.inverse() * delta;
                     assert!(local.x.abs() < 0.00001 && local.y.abs() < 0.00001);
+                    let camera = Mat4::orthographic_rh(-6.04, 6.50, -6., 7., 0.1, 100.)
+                        * Mat4::look_at_rh(Vec3::new(0., 0., 20.), Vec3::ZERO, Vec3::Y);
+                    let screen_delta =
+                        camera.project_point3(projected) - camera.project_point3(first);
+                    let forward = rotation * Vec3::Z;
+                    assert!((screen_delta.x - forward.x * depth / 6.27).abs() < 0.00001);
+                    assert!((screen_delta.y - forward.y * depth / 6.5).abs() < 0.00001);
                 }
             }
         }
@@ -586,12 +615,12 @@ mod eye_effect_tests {
         let (full, opacity) = brow_transform(0, 0.55).unwrap();
         assert_eq!(opacity, 1.);
         assert!(
-            (full.transform_point3(Vec3::ZERO) - (eye_anchor(0) + Vec3::new(0., 0.58, 0.02)))
+            (full.transform_point3(Vec3::ZERO) - (eye_anchor(0) + Vec3::new(0., 0.74, 0.02)))
                 .length()
                 < 0.00001
         );
         let (_, half) = brow_transform(0, 0.325).unwrap();
-        assert!((half - 0.5).abs() < 0.00001);
+        assert!((half - 0.5f32.sqrt()).abs() < 0.00001);
         let mesh = eye_effect_meshes()
             .into_iter()
             .find(|m| m.part == Part::Brow { side: 0 })
@@ -600,9 +629,9 @@ mod eye_effect_tests {
         assert_eq!(mesh.indices.len(), 20 * 6 * 6);
         for (i, v) in mesh.vertices.iter().enumerate() {
             let t = (i / 7) as f32 / 20.;
-            let curve = Vec3::new(-0.25 + 0.5 * t, 0.32 * t * (1. - t), 0.);
+            let curve = Vec3::new(-0.31 + 0.62 * t, 0.32 * t * (1. - t), 0.);
             assert!((Vec3::from_array(v.position).distance(curve) - 0.055).abs() < 0.00001);
-            assert_eq!(v.color, [0.0033465358, 0.0051815165, 0.0065120906, 1.]);
+            assert_eq!(v.color, [0., 0., 0., 1.]);
         }
     }
 }

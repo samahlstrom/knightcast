@@ -32,3 +32,12 @@ Opening inner lips slides the jaw down (up to 0.54 world units); microphone ampl
 ## Validation and user session
 
 Use offscreen GPU renders and synthetic tracking for initial verification. Do not launch a visible window, change the user's focused window, alter OBS scenes or capture the camera during background implementation. A new native app can be launched when the user chooses to switch. Keep all live stream-kit services intact. Screenshots for verification belong outside the public repository.
+
+## Convex sprite outlines
+
+A sprite asset may include `convexOutline`, an ordered convex polygon of normalized
+UV pairs in `[0,1]`. The native loader draws a triangle fan over that outline instead
+of the default full image quad; it does not repaint or resample the source image.
+This allows an extracted prop to exclude surrounding background scraps. Keep the
+existing desk backing beneath any pixels that were previously part of a rectangular
+prop cutout. `sourceRect` still selects a source region before UVs are applied.

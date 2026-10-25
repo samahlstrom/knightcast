@@ -113,3 +113,14 @@ uniform change. Final standard tests:31passed,sixopt-inGPU/external tests exclud
 formatting, strict Clippy and the optimized build passed. These are synthetic
 expression checks; actual trigger comfort depends on the user's resting-face
 calibration and camera view.
+
+## Wrist overlap, keyboard trim and brow placement
+
+The external stream-kit rig now uses an additional rigid wrist-mounted plate from
+its existing keyboard-side gauntlet artwork, behind the mouse glove. Native neutral,
+maximum inward bend and outward-reach screenshots were inspected. A convex keyboard
+outline removes the extracted wood fringe; an existing desk scanline fills the old
+rectangular cutout below it. Source PNGs remain unchanged. Brows are 24% wider,
+0.16 model units higher and pure black, with a stronger opacity response. The brow
+geometry test, strict Clippy and release build passed; isolated synthetic-input
+renders verified these changes without injecting events into the live hub.
