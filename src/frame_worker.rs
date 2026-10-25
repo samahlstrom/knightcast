@@ -88,6 +88,7 @@ impl FrameWorker {
                 pose.neutral=glam::Quat::from_array(config.neutral).normalize();
                 pose.linked_eyes=config.linked_eyes;
                 pose.blink_baseline=config.blink_baseline;
+                pose.wide_baseline=config.wide_baseline;
                 pose.blink_smoothing_ms=config.blink_smoothing_ms;
                 pose.mouth_gain=config.mouth_gain;
                 pose.mouth_baseline=config.mouth_baseline;

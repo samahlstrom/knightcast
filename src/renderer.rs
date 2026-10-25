@@ -10,6 +10,27 @@ use glam::{Mat4, Quat, Vec3};
 
 use wgpu::util::DeviceExt;
 
+fn draw_uniform(matrix: Mat4, opacity: f32) -> [f32; 20] {
+    let mut uniform = [1.; 20];
+    uniform[..16].copy_from_slice(&matrix.to_cols_array());
+    uniform[19] = opacity;
+    uniform
+}
+fn draw_visible(part: Part, p: &Pose, activity: &crate::activity::Frame) -> bool {
+    match part {
+        Part::EyeLeft | Part::EyeRight => {
+            p.surprise <= 0.01 && activity.expression == crate::activity::Expression::Neutral
+        }
+        Part::ReactionEye { expression, .. } => {
+            p.surprise <= 0.01 && expression == activity.expression
+        }
+        Part::EyePop { stage, side } => {
+            crate::assets::eye_pop_transform(stage, side, p.surprise).is_some()
+        }
+        Part::Brow { side } => crate::assets::brow_transform(side, p.wide[side]).is_some(),
+        _ => true,
+    }
+}
 struct Draw {
     vertex: wgpu::Buffer,
     index: wgpu::Buffer,
@@ -248,7 +269,7 @@ impl Renderer {
 
                 let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: None,
-                    contents: bytemuck::cast_slice(&Mat4::IDENTITY.to_cols_array()),
+                    contents: bytemuck::cast_slice(&draw_uniform(Mat4::IDENTITY, 1.)),
                     usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 });
 
@@ -391,6 +412,7 @@ impl Renderer {
             * Mat4::from_translation(-pivot);
 
         for draw in &self.draws {
+            let mut opacity = 1.;
             let model = match draw.part {
                 Part::Body => {
                     Mat4::from_scale(Vec3::splat(c.body_scale))
@@ -427,6 +449,16 @@ impl Renderer {
                         * Mat4::from_scale(Vec3::new(scale, scale, 1.))
                         * Mat4::from_translation(-draw.center)
                 }
+                Part::EyePop { stage, side } => {
+                    head * crate::assets::eye_pop_transform(stage, side, p.surprise)
+                        .unwrap_or(Mat4::IDENTITY)
+                }
+                Part::Brow { side } => {
+                    let (transform, level) = crate::assets::brow_transform(side, p.wide[side])
+                        .unwrap_or((Mat4::IDENTITY, 0.));
+                    opacity = level;
+                    head * transform
+                }
                 Part::Interior => {
                     let stretch = 0.54 * p.mouth / (draw.y_bounds[1] - draw.y_bounds[0]).max(0.001);
                     head * Mat4::from_translation(Vec3::new(0., -draw.y_bounds[1] * stretch, 0.))
@@ -438,7 +470,7 @@ impl Renderer {
             self.queue.write_buffer(
                 &draw.uniform,
                 0,
-                bytemuck::cast_slice(&(camera * model).to_cols_array()),
+                bytemuck::cast_slice(&draw_uniform(camera * model, opacity)),
             );
         }
 
@@ -474,16 +506,8 @@ impl Renderer {
             });
 
             for draw in &self.draws {
-                match draw.part {
-                    Part::EyeLeft | Part::EyeRight
-                        if activity.expression != crate::activity::Expression::Neutral =>
-                    {
-                        continue;
-                    }
-                    Part::ReactionEye { expression, .. } if expression != activity.expression => {
-                        continue;
-                    }
-                    _ => {}
+                if !draw_visible(draw.part, p, activity) {
+                    continue;
                 }
                 pass.set_pipeline(if draw.double_sided {
                     &self.pipeline
@@ -589,5 +613,62 @@ impl Renderer {
         buffer.unmap();
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod eye_visibility_tests {
+    use super::*;
+    #[test]
+    fn pop_replaces_normal_and_voice_eyes_without_a_fourth_pair() {
+        let pose = Pose {
+            surprise: 1.,
+            wide: [0.55; 2],
+            ..Default::default()
+        };
+        for expression in [
+            crate::activity::Expression::Neutral,
+            crate::activity::Expression::Stars,
+            crate::activity::Expression::Annoyed,
+        ] {
+            let activity = crate::activity::Frame {
+                expression,
+                ..Default::default()
+            };
+            assert!(!draw_visible(Part::EyeLeft, &pose, &activity));
+            assert!(!draw_visible(Part::EyeRight, &pose, &activity));
+            assert!(!draw_visible(
+                Part::ReactionEye {
+                    right: false,
+                    expression
+                },
+                &pose,
+                &activity
+            ));
+            assert!(!draw_visible(
+                Part::ReactionEye {
+                    right: true,
+                    expression
+                },
+                &pose,
+                &activity
+            ));
+            let count = (0..3)
+                .flat_map(|stage| (0..2).map(move |side| Part::EyePop { stage, side }))
+                .filter(|part| draw_visible(*part, &pose, &activity))
+                .count();
+            assert_eq!(count, 6);
+            assert!(draw_visible(Part::Brow { side: 0 }, &pose, &activity));
+        }
+        let normal = Pose::default();
+        let activity = crate::activity::Frame::default();
+        assert!(draw_visible(Part::EyeLeft, &normal, &activity));
+        assert!(draw_visible(Part::EyeRight, &normal, &activity));
+        assert!(!draw_visible(
+            Part::EyePop { stage: 0, side: 0 },
+            &normal,
+            &activity
+        ));
+        assert!(!draw_visible(Part::Brow { side: 0 }, &normal, &activity));
     }
 }

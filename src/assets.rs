@@ -19,6 +19,13 @@ pub enum Part {
     EyeRight,
     Neck,
     Interior,
+    EyePop {
+        stage: usize,
+        side: usize,
+    },
+    Brow {
+        side: usize,
+    },
     ReactionEye {
         right: bool,
         expression: crate::activity::Expression,
@@ -203,6 +210,7 @@ impl Assets {
                 out.meshes.push(reaction_eye(center, right, expression));
             }
         }
+        out.meshes.extend(eye_effect_meshes());
         out.report.push(format!("{} rigid GPU primitives; original body sprites; unlit base color, vertex color, sRGB textures, alpha and outlines",out.meshes.len()));
         Ok(out)
     }
@@ -377,5 +385,224 @@ fn reaction_eye(center: Vec3, right: bool, expression: crate::activity::Expressi
         double_sided: true,
         center,
         body_slot: None,
+    }
+}
+
+// Ported from the user's own head-blender/eye-pop.mjs. Eye pops extend along
+// helmet-local +Z only: head rotation is applied later to the whole assembly.
+const POP_SIZES: [f32; 3] = [1., 1.55, 2.15];
+const POP_DEPTHS: [f32; 3] = [0., 1.35, 2.85];
+const BROW_RADIUS: f32 = 0.055;
+pub fn eye_anchor(side: usize) -> Vec3 {
+    let x = if side == 0 { -0.741 } else { 0.669 };
+    Vec3::new(x, 1.685, (2.06f32.powi(2) - x * x).max(0.01).sqrt() + 0.025)
+}
+pub fn eye_pop_transform(stage: usize, side: usize, level: f32) -> Option<Mat4> {
+    if stage >= 3 || side >= 2 || level <= 0.01 {
+        return None;
+    }
+    let delay = stage as f32 * 0.08;
+    let progress = ((level - delay) / (1. - delay)).clamp(0., 1.);
+    if stage > 0 && progress <= 0.01 {
+        return None;
+    }
+    let extension = progress + (progress * std::f32::consts::PI).sin() * 0.06;
+    let size = 1. + (POP_SIZES[stage] - 1.) * progress;
+    let position = eye_anchor(side) + Vec3::Z * (POP_DEPTHS[stage] * extension);
+    Some(
+        Mat4::from_translation(position)
+            * Mat4::from_scale(Vec3::new(0.225 * size, 0.33 * size, 0.045)),
+    )
+}
+pub fn brow_transform(side: usize, wide: f32) -> Option<(Mat4, f32)> {
+    let level = ((wide - 0.1) / 0.45).clamp(0., 1.);
+    if side >= 2 || level <= 0.01 {
+        return None;
+    }
+    let anchor = eye_anchor(side);
+    let position = anchor + Vec3::new(0., 0.33 + 0.13 + 0.12 * level, 0.02);
+    let yaw = (anchor.x / 2.06).clamp(-1., 1.).asin();
+    Some((
+        Mat4::from_translation(position) * Mat4::from_rotation_y(yaw),
+        level,
+    ))
+}
+fn effect_mesh(vertices: Vec<Vertex>, indices: Vec<u32>, part: Part) -> Mesh {
+    Mesh {
+        vertices,
+        indices,
+        texture: image::RgbaImage::from_pixel(1, 1, image::Rgba([255; 4])),
+        part,
+        double_sided: true,
+        center: Vec3::ZERO,
+        body_slot: None,
+    }
+}
+fn eye_effect_meshes() -> Vec<Mesh> {
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+    for row in 0..=16 {
+        let theta = std::f32::consts::PI * row as f32 / 16.;
+        for column in 0..=24 {
+            let phi = std::f32::consts::TAU * column as f32 / 24.;
+            vertices.push(Vertex {
+                position: [
+                    theta.sin() * phi.cos(),
+                    theta.cos(),
+                    theta.sin() * phi.sin(),
+                ],
+                uv: [0.; 2],
+                color: [1.; 4],
+            });
+        }
+    }
+    for row in 0..16 {
+        for column in 0..24 {
+            let i = row * 25 + column;
+            indices.extend([i, i + 1, i + 26, i, i + 26, i + 25]);
+        }
+    }
+    let mut meshes = Vec::new();
+    for stage in 0..3 {
+        for side in 0..2 {
+            meshes.push(effect_mesh(
+                vertices.clone(),
+                indices.clone(),
+                Part::EyePop { stage, side },
+            ));
+        }
+    }
+    vertices.clear();
+    indices.clear();
+    // Quadratic control point height .16 gives a curve peak of .08. The tube
+    // follows the original 20-segment/6-sided geometry; user requested thicker ink brows.
+    let ink = [0.0033465358, 0.0051815165, 0.0065120906, 1.];
+    for segment in 0..=20 {
+        let t = segment as f32 / 20.;
+        let center = Vec3::new(-0.25 + 0.5 * t, 0.32 * t * (1. - t), 0.);
+        let tangent = Vec3::new(0.5, 0.32 * (1. - 2. * t), 0.).normalize();
+        let in_plane = Vec3::new(-tangent.y, tangent.x, 0.);
+        for radial in 0..=6 {
+            let angle = std::f32::consts::TAU * radial as f32 / 6.;
+            let point = center + BROW_RADIUS * (angle.cos() * Vec3::Z + angle.sin() * in_plane);
+            vertices.push(Vertex {
+                position: point.to_array(),
+                uv: [0.; 2],
+                color: ink,
+            });
+        }
+    }
+    for segment in 0..20 {
+        for radial in 0..6 {
+            let i = segment * 7 + radial;
+            indices.extend([i, i + 1, i + 8, i, i + 8, i + 7]);
+        }
+    }
+    for side in 0..2 {
+        meshes.push(effect_mesh(
+            vertices.clone(),
+            indices.clone(),
+            Part::Brow { side },
+        ));
+    }
+    meshes
+}
+
+#[cfg(test)]
+mod eye_effect_tests {
+    use super::*;
+    #[test]
+    fn exactly_three_white_pairs_with_original_first_dimensions() {
+        let meshes = eye_effect_meshes();
+        assert_eq!(
+            meshes
+                .iter()
+                .filter(|m| matches!(m.part, Part::EyePop { .. }))
+                .count(),
+            6
+        );
+        assert_eq!(
+            meshes
+                .iter()
+                .filter(|m| matches!(m.part, Part::Brow { .. }))
+                .count(),
+            2
+        );
+        for stage in 0..3 {
+            for side in 0..2 {
+                let transform = eye_pop_transform(stage, side, 1.).unwrap();
+                let (scale, _, position) = transform.to_scale_rotation_translation();
+                assert!(
+                    (scale - Vec3::new(0.225 * POP_SIZES[stage], 0.33 * POP_SIZES[stage], 0.045))
+                        .length()
+                        < 0.00001
+                );
+                assert!(
+                    (position - eye_anchor(side) - Vec3::Z * POP_DEPTHS[stage]).length() < 0.00001
+                );
+                let mesh = meshes
+                    .iter()
+                    .find(|m| m.part == Part::EyePop { stage, side })
+                    .unwrap();
+                assert!(mesh.vertices.iter().all(|v| v.color == [1.; 4]));
+                let x_extent = mesh
+                    .vertices
+                    .iter()
+                    .map(|v| {
+                        transform.transform_point3(Vec3::from_array(v.position)).x - position.x
+                    })
+                    .fold(0f32, |a, b| a.max(b.abs()));
+                assert!((x_extent - scale.x).abs() < 0.00001);
+            }
+        }
+        assert!(eye_pop_transform(3, 0, 1.).is_none());
+        assert!(eye_pop_transform(0, 0, 0.).is_none());
+        assert!(eye_pop_transform(2, 0, 0.1).is_none());
+    }
+    #[test]
+    fn stage_projection_follows_rotated_helmet_forward_axis() {
+        for rotation in [
+            glam::Quat::IDENTITY,
+            glam::Quat::from_euler(glam::EulerRot::YXZ, 0.5, 0.2, -0.1),
+        ] {
+            let head = Mat4::from_rotation_translation(rotation, Vec3::new(0.3, 0.7, -0.2));
+            for side in 0..2 {
+                let first =
+                    (head * eye_pop_transform(0, side, 1.).unwrap()).transform_point3(Vec3::ZERO);
+                for (stage, depth) in POP_DEPTHS.iter().enumerate().skip(1) {
+                    let projected = (head * eye_pop_transform(stage, side, 1.).unwrap())
+                        .transform_point3(Vec3::ZERO);
+                    let delta = projected - first;
+                    assert!((delta - rotation * Vec3::Z * *depth).length() < 0.00001);
+                    let local = rotation.inverse() * delta;
+                    assert!(local.x.abs() < 0.00001 && local.y.abs() < 0.00001);
+                }
+            }
+        }
+    }
+    #[test]
+    fn raised_brows_match_curve_thickness_ink_and_response() {
+        assert!(brow_transform(0, 0.1).is_none());
+        let (full, opacity) = brow_transform(0, 0.55).unwrap();
+        assert_eq!(opacity, 1.);
+        assert!(
+            (full.transform_point3(Vec3::ZERO) - (eye_anchor(0) + Vec3::new(0., 0.58, 0.02)))
+                .length()
+                < 0.00001
+        );
+        let (_, half) = brow_transform(0, 0.325).unwrap();
+        assert!((half - 0.5).abs() < 0.00001);
+        let mesh = eye_effect_meshes()
+            .into_iter()
+            .find(|m| m.part == Part::Brow { side: 0 })
+            .unwrap();
+        assert_eq!(mesh.vertices.len(), 21 * 7);
+        assert_eq!(mesh.indices.len(), 20 * 6 * 6);
+        for (i, v) in mesh.vertices.iter().enumerate() {
+            let t = (i / 7) as f32 / 20.;
+            let curve = Vec3::new(-0.25 + 0.5 * t, 0.32 * t * (1. - t), 0.);
+            assert!((Vec3::from_array(v.position).distance(curve) - 0.055).abs() < 0.00001);
+            assert_eq!(v.color, [0.0033465358, 0.0051815165, 0.0065120906, 1.]);
+        }
     }
 }

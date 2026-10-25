@@ -94,3 +94,22 @@ the stream-kit-managed avatar restart. Final standard tests: 24 passed, six opt-
 GPU/external-fixture tests excluded from the default run; the integration-specific
 opt-in tests were run separately as described above. Formatting, strict Clippy and
 the release build passed.
+
+## Restored surprise expression and black eyebrows
+
+The original stream-kit eye-pop motion and trigger were ported to the native path.
+The trigger requires sustained fresh tracking, unamplified lip opening and both
+calibrated eyes widened; a blink, a brief spike, talking alone or widened eyes alone
+cannot trigger it. Face calibration records median resting eye openness. Eyebrows
+use the existing curved shape with radius0.055 instead of0.035 and the helmet's
+black ink color, as requested.
+
+Geometry and visibility tests verify exactly three white pairs (original first
+size, stages1/1.55/2.15), increasing depth along the rotated helmet's forward axis,
+replacement of normal/voice eyes without a fourth pair, and thicker ink brows.
+Actual CLI synthetic-UDP front, turned, brows-only and neutral screenshots were
+visually inspected. The real egui GPU color regression passed after the brow-opacity
+uniform change. Final standard tests:31passed,sixopt-inGPU/external tests excluded;
+formatting, strict Clippy and the optimized build passed. These are synthetic
+expression checks; actual trigger comfort depends on the user's resting-face
+calibration and camera view.

@@ -201,6 +201,10 @@ pub struct Pose {
     pub linked_eyes: bool,
     pub blink_baseline: [f32; 2],
     pub blink_smoothing_ms: f32,
+    pub wide_baseline: [f32; 2],
+    pub wide: [f32; 2],
+    pub surprise: f32,
+    pub surprise_motion: crate::expressions::SurpriseMotion,
 }
 impl Default for Pose {
     fn default() -> Self {
@@ -215,6 +219,10 @@ impl Default for Pose {
             linked_eyes: true,
             blink_baseline: [0.; 2],
             blink_smoothing_ms: 35.,
+            wide_baseline: [0.38; 2],
+            wide: [0.; 2],
+            surprise: 0.,
+            surprise_motion: Default::default(),
         }
     }
 }
@@ -261,10 +269,46 @@ impl Pose {
             percentile(|p| p.blink_right).min(0.8),
         ];
         self.blink = [0.; 2];
+        let median = |channel: fn(&Packet) -> f32| {
+            let mut values: Vec<_> = samples.iter().map(channel).collect();
+            values.sort_by(f32::total_cmp);
+            values[values.len() / 2].min(0.8)
+        };
+        self.wide_baseline = [median(|p| p.eye_wide_left), median(|p| p.eye_wide_right)];
+        self.wide = [0.; 2];
+        self.surprise = 0.;
+        self.surprise_motion = Default::default();
         true
     }
 
     pub fn update(&mut self, s: &Snapshot, now: f64, dt: f32, tau: f32, grace: f32, ret: f32) {
+        let fresh = s
+            .latest
+            .as_ref()
+            .is_some_and(|(p, t)| p.tracked && now - *t < 0.2);
+        let (mouth, target_wide, blink) = if fresh {
+            let p = &s.latest.as_ref().unwrap().0;
+            (
+                (p.mouth_open - self.mouth_baseline).clamp(0., 1.),
+                [
+                    crate::expressions::wide_response(p.eye_wide_left, self.wide_baseline[0]),
+                    crate::expressions::wide_response(p.eye_wide_right, self.wide_baseline[1]),
+                ],
+                [
+                    blink_response(p.blink_left, self.blink_baseline[0]),
+                    blink_response(p.blink_right, self.blink_baseline[1]),
+                ],
+            )
+        } else {
+            (0., [0.; 2], [0.; 2])
+        };
+        let wide_alpha = 1. - (-dt.max(0.) / 0.075).exp();
+        for (value, target) in self.wide.iter_mut().zip(target_wide) {
+            *value += (target - *value) * wide_alpha;
+        }
+        self.surprise_motion
+            .step(dt, now, fresh, mouth, self.wide, blink);
+        self.surprise = self.surprise_motion.level;
         let Some((p, t)) = &s.valid else {
             self.state = State::Waiting;
             self.current = smooth(self.current, Quat::IDENTITY, dt, ret);
@@ -325,6 +369,49 @@ mod tests {
     use super::*;
     fn bytes(p: Packet) -> Vec<u8> {
         serde_json::to_vec(&p).unwrap()
+    }
+    #[test]
+    fn surprise_uses_raw_lips_and_calibrated_widening_without_moving_head() {
+        let mut pose = Pose {
+            mouth_gain: 10.,
+            ..Default::default()
+        };
+        let mut snapshot = Snapshot::default();
+        let mut packet = Packet {
+            eye_wide_left: 0.9,
+            eye_wide_right: 0.9,
+            mouth_open: 0.1,
+            ..Default::default()
+        };
+        for frame in 0..60 {
+            let now = frame as f64 / 60.;
+            packet.seq = frame;
+            snapshot.publish(&bytes(packet.clone()), now);
+            pose.update(&snapshot, now, 1. / 60., 0.025, 0.25, 0.4);
+        }
+        assert!(pose.wide.iter().all(|v| *v > 0.8));
+        assert!(
+            pose.mouth > 0.7,
+            "High mouth gain still animates ordinary speech"
+        );
+        assert_eq!(
+            pose.surprise, 0.,
+            "Amplified talking must not trigger surprise"
+        );
+        packet.mouth_open = 0.6;
+        for frame in 60..120 {
+            let now = frame as f64 / 60.;
+            packet.seq = frame;
+            snapshot.publish(&bytes(packet.clone()), now);
+            pose.update(&snapshot, now, 1. / 60., 0.025, 0.25, 0.4);
+        }
+        assert!(pose.surprise > 0.99);
+        assert!(pose.current.angle_between(Quat::IDENTITY) < 0.0001);
+        for frame in 120..240 {
+            pose.update(&snapshot, frame as f64 / 60., 1. / 60., 0.025, 0.25, 0.4);
+        }
+        assert_eq!(pose.surprise, 0.);
+        assert!(pose.wide.iter().all(|v| *v < 0.001));
     }
     #[test]
     fn parser_rejection_preserves_valid() {

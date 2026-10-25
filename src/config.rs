@@ -12,6 +12,7 @@ pub struct Config {
     pub mouth_baseline: f32,
     pub linked_eyes: bool,
     pub blink_baseline: [f32; 2],
+    pub wide_baseline: [f32; 2],
     pub blink_smoothing_ms: f32,
     pub grace_ms: f32,
     pub return_ms: f32,
@@ -35,6 +36,7 @@ impl Default for Config {
             mouth_baseline: 0.,
             linked_eyes: true,
             blink_baseline: [0.; 2],
+            wide_baseline: [0.38; 2],
             blink_smoothing_ms: 35.,
             grace_ms: 250.,
             return_ms: 400.,
@@ -74,7 +76,7 @@ impl Config {
                 bail!("timing must be finite and between 0 and 60000 ms")
             }
         }
-        for baseline in self.blink_baseline {
+        for baseline in self.blink_baseline.into_iter().chain(self.wide_baseline) {
             if !baseline.is_finite() || !(0. ..=0.8).contains(&baseline) {
                 bail!("invalid resting eye calibration")
             }

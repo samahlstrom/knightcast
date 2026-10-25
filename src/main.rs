@@ -2,6 +2,7 @@
 mod activity;
 mod assets;
 mod config;
+mod expressions;
 mod frame_worker;
 mod output;
 #[cfg(test)]
@@ -107,6 +108,7 @@ fn main() -> Result<()> {
         let mut pose = tracking::Pose {
             linked_eyes: config.linked_eyes,
             blink_baseline: config.blink_baseline,
+            wide_baseline: config.wide_baseline,
             blink_smoothing_ms: config.blink_smoothing_ms,
             mouth_gain: config.mouth_gain,
             mouth_baseline: config.mouth_baseline,
@@ -300,6 +302,7 @@ impl App {
                 self.config.neutral = self.pose.neutral.to_array();
                 self.config.mouth_baseline = self.pose.mouth_baseline;
                 self.config.blink_baseline = self.pose.blink_baseline;
+                self.config.wide_baseline = self.pose.wide_baseline;
                 self.notice =
                     "Face calibrated. Resting eyes, mouth and head position updated.".into();
             } else {
@@ -402,6 +405,7 @@ impl eframe::App for App {
         self.update_calibration(&s, time);
         self.pose.linked_eyes = self.config.linked_eyes;
         self.pose.blink_baseline = self.config.blink_baseline;
+        self.pose.wide_baseline = self.config.wide_baseline;
         self.pose.blink_smoothing_ms = self.config.blink_smoothing_ms;
         self.pose.mouth_gain = self.config.mouth_gain;
         self.pose.mouth_baseline = self.config.mouth_baseline;
@@ -459,6 +463,7 @@ impl eframe::App for App {
                     if !self.notice.is_empty() { ui.label(&self.notice); }
                     ui.separator();
                     ui.strong("Eyes and movement");
+                    ui.small("Wide eyes raise black brows. Wide eyes + open mouth trigger the three-stage eye pop.");
                     ui.checkbox(&mut self.config.linked_eyes, "Keep both eyes in sync")
                         .on_hover_text("Recommended for a camera off to one side. Prevents the farther eye staying smaller; both eyes blink together. Turn off for independent winks.");
                     ui.add(egui::Slider::new(&mut self.config.blink_smoothing_ms, 0. ..=100.).text("Eye smoothing (ms)"));
@@ -524,6 +529,7 @@ impl eframe::App for App {
                         ui.label(format!("{:.0} preview FPS · {:.1} tracking samples/s",self.fps,self.packet_rate));
                         if let Some((p,t)) = &s.valid {
                             ui.label(format!("Last pose {:.0} ms · capture {:.0} ms · inference {:.0} ms",(time-t)*1000.,p.capture_age_ms,p.inference_ms));
+                            ui.label(format!("Eye widening {:.2} / {:.2} · surprise {:.2}",self.pose.wide[0],self.pose.wide[1],self.pose.surprise));
                             ui.label(format!("Raw eyes {:.2} / {:.2} · shown {:.2} / {:.2}",p.blink_left,p.blink_right,self.pose.blink[0],self.pose.blink[1]));
                         }
                         ui.label(format!("Accepted {} · rejected {} · superseded {}",s.accepted,s.rejected,s.superseded));

@@ -50,6 +50,10 @@ uses `pointer`, `hand`, and supported `expr` messages, with bounded latest state
 and release on disconnect. No second keyboard/mouse device reader is started.
 The original rigid two-bone arms, desk movement bounds, keyboard finger cycle,
 left-index/right-middle clicks and timed stars/annoyed eye reactions are native.
+Wide eyes raise thick black eyebrows; wide eyes plus an open mouth trigger three
+increasing plain-white eye pairs extending along the helmet’s forward axis. The
+first pair keeps the original eye size. Face calibration also records resting
+eye openness, so widening is measured relative to your normal expression.
 Mic amplitude never drives the helmet.
 
 `--obs-port` exposes transparent 600×660 video at up to 60 FPS on loopback TCP.
@@ -99,7 +103,7 @@ The timed run continuously renders and receives UDP; it reports render submissio
 
 ## Current limits
 
-This is an independently implemented native prototype, not full VMagicMirror parity. Live camera/desktop validation must be recorded separately from synthetic/offscreen tests. Native smile/gaze/wide-eye/surprise rendering, coordinated near/far body motion, costume/event-effect parity, virtual camera, VRM, release packaging and Windows validation are pending. Head-scale and unsupported expression channels are validated but not rendered. The source channel is selected in the adapter; the native app has one custom JSON protocol.
+This is an independently implemented native prototype, not full VMagicMirror parity. Live camera/desktop validation must be recorded separately from synthetic/offscreen tests. Native smile/gaze rendering, coordinated near/far body motion, costume/event-effect parity, virtual camera, VRM, release packaging and Windows validation are pending. Head-scale and unsupported expression channels are validated but not rendered. The source channel is selected in the adapter; the native app has one custom JSON protocol.
 
 The [behavioral specification](docs/BEHAVIORAL_SPEC.md), [provenance ledger](docs/PROVENANCE.md), [asset contract](docs/KNIGHT_ASSETS.md) and [protocol](docs/TRACKING_PROTOCOL.md) describe the design and evidence boundaries. No reference application's implementation code or binary was inspected for this implementation. Only independently written requirements, standard dependency APIs, and the user's own authorized rig/art were used.
 
