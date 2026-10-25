@@ -1,8 +1,13 @@
+#![recursion_limit = "256"]
+mod activity;
 mod assets;
 mod config;
+mod frame_worker;
+mod output;
 #[cfg(test)]
 mod preview_tests;
 mod renderer;
+mod rig;
 mod tracking;
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -19,6 +24,12 @@ use std::{
 struct Args {
     #[arg(long)]
     asset_root: Option<PathBuf>,
+    /// Connect to stream-kit's existing local input/event hub.
+    #[arg(long)]
+    hub_port: Option<u16>,
+    /// Serve transparent 600x660 RGBA video to an OBS Media Source.
+    #[arg(long)]
+    obs_port: Option<u16>,
     /// Render a PNG without opening a window.
     #[arg(long)]
     screenshot: Option<PathBuf>,
@@ -110,6 +121,13 @@ fn main() -> Result<()> {
             args.roll.to_radians(),
         );
         pose.mouth = args.mouth.clamp(0., 1.);
+        let mut activity = args
+            .hub_port
+            .map(|port| activity::Client::start(port, renderer.pointer_bounds()));
+        let mut native_output = args
+            .obs_port
+            .map(|port| output::NativeOutput::new(args.width, args.height, 60, port))
+            .transpose()?;
         let start = Instant::now();
         let mut previous = start;
         let mut frames = 0u64;
@@ -129,7 +147,13 @@ fn main() -> Result<()> {
                     config.return_ms / 1000.,
                 );
             }
-            renderer.render(&config, &pose);
+            let hands = activity.as_mut().map(|a| a.frame(dt)).unwrap_or_default();
+            renderer.render_with_activity(&config, &pose, &hands);
+            if let Some(output) = &mut native_output
+                && output.wants_frame()
+            {
+                output.offer(&renderer)?;
+            }
             frames += 1;
             if args.seconds == 0. || start.elapsed().as_secs_f64() >= args.seconds {
                 break;
@@ -207,6 +231,10 @@ fn main() -> Result<()> {
                 output_only: false,
                 notice: String::new(),
                 calibration: None,
+                hub_port: args.hub_port,
+                activity: None,
+                obs_port: args.obs_port,
+                obs_worker: None,
             };
             app.pose.neutral = glam::Quat::from_array(app.config.neutral).normalize();
             app.reload();
@@ -233,6 +261,10 @@ struct App {
     output_only: bool,
     notice: String,
     calibration: Option<Calibration>,
+    hub_port: Option<u16>,
+    activity: Option<activity::Client>,
+    obs_port: Option<u16>,
+    obs_worker: Option<frame_worker::FrameWorker>,
 }
 struct Calibration {
     started: Instant,
@@ -312,6 +344,39 @@ impl App {
                     &gpu.preview_view(),
                     wgpu::FilterMode::Linear,
                 ));
+                if let Some(port) = self.hub_port {
+                    self.activity = Some(activity::Client::start(port, gpu.pointer_bounds()));
+                }
+                if let Some(port) = self.obs_port {
+                    match assets::Assets::load(std::path::Path::new(&self.config.asset_root)) {
+                        Ok(assets) => {
+                            let output_gpu = renderer::Renderer::new(
+                                self.state.device.clone(),
+                                self.state.queue.clone(),
+                                assets,
+                                600,
+                                660,
+                                gpu.backend.clone(),
+                            );
+                            self.obs_worker = None;
+                            let worker =
+                                output::NativeOutput::new(600, 660, 60, port).and_then(|output| {
+                                    frame_worker::FrameWorker::start(
+                                        output_gpu,
+                                        output,
+                                        &self.config,
+                                        self.receiver.as_ref(),
+                                        self.hub_port,
+                                    )
+                                });
+                            match worker {
+                                Ok(worker) => self.obs_worker = Some(worker),
+                                Err(e) => self.errors.push(format!("OBS output: {e:#}")),
+                            }
+                        }
+                        Err(e) => self.errors.push(format!("OBS assets: {e:#}")),
+                    }
+                }
                 self.gpu = Some(gpu);
             }
             Err(e) => self.errors.push(format!("Assets: {e:#}")),
@@ -354,13 +419,27 @@ impl eframe::App for App {
             self.rate_last = now;
             self.accepted_last = s.accepted;
         }
+        let hands = self
+            .activity
+            .as_mut()
+            .map(|a| a.frame(dt))
+            .unwrap_or_default();
         if ctx.input(|i| i.key_pressed(egui::Key::F1)) {
             self.output_only = !self.output_only
         }
         if !self.output_only {
             egui::SidePanel::left("controls").default_width(330.).show(ctx, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
-                    ui.heading("KnightCast");
+                    ui.heading(if self.hub_port.is_some() { "Stream-kit · KnightCast" } else { "KnightCast" });
+                    if self.hub_port.is_some() {
+                        ui.label(if hands.health.connected { "Stream-kit input connected" } else { "Connecting to stream-kit input…" });
+                        ui.small(format!("Mouse / keyboard: {}", hands.health.hands_status));
+                    }
+                    if let Some(output) = &self.obs_worker {
+                        let stats = output.stats();
+                        ui.label(if stats.connected { "OBS video connected" } else { "OBS video ready · waiting for OBS" });
+                        if let Some(error) = stats.error { ui.small(error); }
+                    }
                     let status = match self.pose.state {
                         tracking::State::Tracking => "Face tracking active",
                         tracking::State::Grace => "Reacquiring face…",
@@ -448,6 +527,10 @@ impl eframe::App for App {
                             ui.label(format!("Raw eyes {:.2} / {:.2} · shown {:.2} / {:.2}",p.blink_left,p.blink_right,self.pose.blink[0],self.pose.blink[1]));
                         }
                         ui.label(format!("Accepted {} · rejected {} · superseded {}",s.accepted,s.rejected,s.superseded));
+                        if let Some(output) = &self.obs_worker {
+                            let x = output.stats();
+                            ui.small(format!("OBS {} · frames {} · readbacks {} / {} · connections {} / {} · GPU busy {} · frame age {:?} ms", x.address, x.frames_written, x.readbacks, x.converted, x.connections, x.disconnects, x.readback_busy, x.frame_age_ms));
+                        }
                         if let Some(gpu) = &self.gpu { ui.small(&gpu.backend); for line in &gpu.report { ui.small(line); } }
                         ui.small(self.path.display().to_string());
                     });
@@ -458,7 +541,10 @@ impl eframe::App for App {
             });
         }
         if let Some(gpu) = &self.gpu {
-            gpu.render(&self.config, &self.pose)
+            gpu.render_with_activity(&self.config, &self.pose, &hands)
+        }
+        if let Some(worker) = &self.obs_worker {
+            worker.sync(&self.config, self.receiver.as_ref());
         }
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)

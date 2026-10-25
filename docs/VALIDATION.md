@@ -31,7 +31,7 @@ The installed OpenSeeFace model 3 initialized and inferred on generated blank pi
 
 A read-only camera mode query identified the Pocket 3's MJPEG modes as 720p/1080p at 30 or 25 FPS; its listed 60 FPS mode is 4K H.264. The helper requests MJPEG 1280×720 at 30 FPS and uses aspect-preserving 640×360 inference. This is a requested configuration, not a claim that live capture achieved it.
 
-## Not yet verified or implemented
+## Initial validation boundaries (superseded where noted below)
 
 - No live camera was opened during this work. Physical head direction, real face reacquisition, lip sensitivity, camera sharing and end-to-end latency still need a user-controlled live session.
 - No visible native window was opened. Wayland desktop presentation, window capture, OBS alpha/transparency and OBS integration remain unverified. Existing OBS scenes, services and windows were left intact.
@@ -51,3 +51,46 @@ The explicit GPU regression test `preview_preserves_rendered_srgb_colors` render
 The native app now calibrates from two seconds of distinct fresh samples, taking a low percentile for resting eye/mouth values and a sign-aligned quaternion average for orientation. By default both eyes follow the more-open normalized eye, with a resting dead zone and separate 35 ms smoothing. This targets the asymmetric squint reported with the off-center camera without changing head smoothing. Independent winks remain available by disabling eye linking.
 
 Fourteen CPU/loopback Rust tests now pass, including asymmetric-eye jitter, full-blink preservation, calibration with incidental blinks and quaternion sign changes, migration of older settings, and distinct framing/full-reset behavior. Formatting, strict Clippy and the optimized build passed. The app was reopened using the user's saved settings; the corrected colors, new controls and active live tracking were visually verified. Capture remained at approximately 30 FPS with approximately 9–11 ms inference during that check. Perceived blink quality still benefits from the user's live feedback; a screenshot cannot prove the absence of temporal flicker.
+
+
+## Stream-kit integration
+
+The native renderer now consumes the user's existing loopback WebSocket event hub.
+Read-only live hello confirmed keyboard/mouse service health. Isolated synthetic
+WebSocket fixtures verified keyboard finger cycling, left-index/right-middle mouse
+mapping, bounded pointer accumulation, disconnect release, and timed stars/annoyed
+expressions. Ten reference arm poses match the user's original JavaScript skeleton
+coordinates/angles. Native screenshots with these messages were inspected; no fake
+viewer or input events were injected into the live hub.
+
+The native RGBA output uses background GPU readback, linear-space unpremultiplication,
+one latest CPU frame, FFmpeg NUT muxing and loopback TCP. Opt-in tests verified actual
+GPU-to-TCP pixel/alpha preservation, fresh streams on reconnect, disconnects for
+stalled consumers and bounded child shutdown. An isolated OBS Media Source probe
+preserved generated RGBA values with alpha 0,64,128,255 exactly. It created a temporary
+unselected scene/source and removed both, verifying existing scene/source names and
+program selection unchanged. `scripts/obs_alpha_probe.py` reproduces this explicit
+check; it refuses to run during streaming/recording.
+
+The stream-kit-managed service was started on this workstation. Its camera logged
+approximately 30 samples/second, valid face tracking and roughly 10–13 ms inference.
+The existing OBS scene now contains the native Media Source with the original avatar
+position/crop/scale/visibility; the previous browser source is retained hidden for
+rollback. The actual native-source screenshot showed the approved art with alpha,
+and OBS reported the network Media Source playing. No broadcast or recording was
+started. This does not measure total camera-to-stream latency.
+
+The native window and renderer remain local. Personal artwork, live avatar images,
+OBS credentials, camera frames and workstation settings are not published here.
+
+
+The independent OBS frame-worker regression rendered 24 decoded transparent frames
+with no UI updates and responded to newly supplied UDP poses. Shutdown completed
+within two seconds. Production logs after restart showed 600 new readbacks and 600
+written video frames over ten seconds (60 FPS), latest converted-frame age around
+14 ms, connected input, active face tracking and no output errors. This frame-age
+metric excludes camera and OBS/display latency. OBS automatically reconnected after
+the stream-kit-managed avatar restart. Final standard tests: 24 passed, six opt-in
+GPU/external-fixture tests excluded from the default run; the integration-specific
+opt-in tests were run separately as described above. Formatting, strict Clippy and
+the release build passed.

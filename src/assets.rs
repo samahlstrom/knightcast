@@ -1,3 +1,4 @@
+use crate::rig::Rig;
 use anyhow::{Context, Result, bail};
 use glam::{Mat4, Vec3};
 use serde_json::Value;
@@ -18,6 +19,10 @@ pub enum Part {
     EyeRight,
     Neck,
     Interior,
+    ReactionEye {
+        right: bool,
+        expression: crate::activity::Expression,
+    },
 }
 #[derive(Clone)]
 pub struct Mesh {
@@ -27,10 +32,12 @@ pub struct Mesh {
     pub part: Part,
     pub double_sided: bool,
     pub center: Vec3,
+    pub body_slot: Option<usize>,
 }
 pub struct Assets {
     pub meshes: Vec<Mesh>,
     pub report: Vec<String>,
+    pub rig: Rig,
 }
 fn num(v: &Value, k: &str) -> f32 {
     v[k].as_f64().unwrap_or(0.) as f32
@@ -65,14 +72,15 @@ fn bone(id: &str, bones: &Value, cache: &mut HashMap<String, Mat4>, depth: usize
 }
 impl Assets {
     pub fn load(root: &Path) -> Result<Self> {
-        let mut out = Self {
-            meshes: vec![],
-            report: vec![],
-        };
         let rig_dir = root.join("overlays/original-rig");
         let rig: Value = serde_json::from_slice(
             &std::fs::read(rig_dir.join("rig.json")).context("read original-rig/rig.json")?,
         )?;
+        let mut out = Self {
+            meshes: vec![],
+            report: vec![],
+            rig: Rig::from_value(&rig)?,
+        };
         let mut slots = rig["slots"].as_array().context("rig slots")?.clone();
         slots.sort_by(|a, b| num(a, "z").total_cmp(&num(b, "z")));
         let mut bones = HashMap::new();
@@ -150,6 +158,7 @@ impl Assets {
                 part: Part::Body,
                 double_sided: true,
                 center: Vec3::ZERO,
+                body_slot: Some(order),
             });
         }
         let file = root.join("overlays/head-blender/samson-knight-head.glb");
@@ -176,6 +185,23 @@ impl Assets {
                 &images,
                 &mut out,
             )?;
+        }
+        let eye_centers: Vec<_> = out
+            .meshes
+            .iter()
+            .filter_map(|m| match m.part {
+                Part::EyeLeft => Some((m.center, false)),
+                Part::EyeRight => Some((m.center, true)),
+                _ => None,
+            })
+            .collect();
+        for (center, right) in eye_centers {
+            for expression in [
+                crate::activity::Expression::Stars,
+                crate::activity::Expression::Annoyed,
+            ] {
+                out.meshes.push(reaction_eye(center, right, expression));
+            }
         }
         out.report.push(format!("{} rigid GPU primitives; original body sprites; unlit base color, vertex color, sRGB textures, alpha and outlines",out.meshes.len()));
         Ok(out)
@@ -273,6 +299,7 @@ fn load_node(
                 part,
                 double_sided: material.double_sided(),
                 center,
+                body_slot: None,
             };
             // Preserve the user's existing fixed inner sleeve from live.mjs.
             // Only in-memory clone geometry changes; source artwork is never rewritten.
@@ -296,4 +323,59 @@ fn load_node(
         load_node(child, transform, part, buffers, images, out)?;
     }
     Ok(())
+}
+
+// Same five-point star and 54×10px rounded bar as the user's drawEyes().
+// Curved positions keep the native reaction painted onto the visor surface.
+fn reaction_eye(center: Vec3, right: bool, expression: crate::activity::Expression) -> Mesh {
+    let points: Vec<[f32; 2]> = if expression == crate::activity::Expression::Stars {
+        (0..10)
+            .map(|i| {
+                let angle = std::f32::consts::FRAC_PI_2 - i as f32 * std::f32::consts::PI / 5.;
+                let radius = if i % 2 == 0 { 0.36 } else { 0.15 };
+                [radius * angle.cos(), radius * angle.sin()]
+            })
+            .collect()
+    } else {
+        (0..=12)
+            .map(|i| {
+                let angle = -std::f32::consts::FRAC_PI_2 + i as f32 * std::f32::consts::PI / 12.;
+                [0.22 + 0.05 * angle.cos(), -0.03 + 0.05 * angle.sin()]
+            })
+            .chain((0..=12).map(|i| {
+                let angle = std::f32::consts::FRAC_PI_2 + i as f32 * std::f32::consts::PI / 12.;
+                [-0.22 + 0.05 * angle.cos(), -0.03 + 0.05 * angle.sin()]
+            }))
+            .collect()
+    };
+    let vertex = |xy: [f32; 2]| {
+        let x = center.x + xy[0];
+        let y = center.y + xy[1];
+        Vertex {
+            position: [x, y, (2.06f32.powi(2) - x * x).max(0.).sqrt()],
+            uv: [0.; 2],
+            color: [1.; 4],
+        }
+    };
+    let mut vertices = vec![vertex(
+        if expression == crate::activity::Expression::Annoyed {
+            [0., -0.03]
+        } else {
+            [0.; 2]
+        },
+    )];
+    vertices.extend(points.iter().map(|xy| vertex(*xy)));
+    let mut indices = Vec::new();
+    for i in 0..points.len() as u32 {
+        indices.extend([0, i + 1, (i + 1) % points.len() as u32 + 1]);
+    }
+    Mesh {
+        vertices,
+        indices,
+        texture: image::RgbaImage::from_pixel(1, 1, image::Rgba([255; 4])),
+        part: Part::ReactionEye { right, expression },
+        double_sided: true,
+        center,
+        body_slot: None,
+    }
 }

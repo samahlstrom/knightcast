@@ -19,6 +19,7 @@ struct Draw {
     part: Part,
     double_sided: bool,
     center: Vec3,
+    body_slot: Option<usize>,
     y_bounds: [f32; 2],
 }
 
@@ -36,6 +37,7 @@ pub struct Renderer {
     pub height: u32,
     pub backend: String,
     pub report: Vec<String>,
+    rig: crate::rig::Rig,
 }
 
 impl Renderer {
@@ -300,6 +302,7 @@ impl Renderer {
                     part: mesh.part,
                     double_sided: mesh.double_sided,
                     center: mesh.center,
+                    body_slot: mesh.body_slot,
                     y_bounds: mesh
                         .vertices
                         .iter()
@@ -324,6 +327,7 @@ impl Renderer {
             height,
             backend,
             report: assets.report,
+            rig: assets.rig,
         }
     }
 
@@ -338,12 +342,24 @@ impl Renderer {
         })
     }
 
+    pub fn pointer_bounds(&self) -> [f32; 4] {
+        self.rig.pointer_bounds()
+    }
+    #[cfg(test)]
     pub fn render(&self, c: &Config, p: &Pose) {
+        self.render_with_activity(c, p, &crate::activity::Frame::default());
+    }
+    pub fn render_with_activity(&self, c: &Config, p: &Pose, activity: &crate::activity::Frame) {
+        let deltas = self.rig.deltas(activity);
+        // Contain the authored art rectangle; never stretch it for OBS output sizes.
+        let aspect = self.width as f32 / self.height as f32;
+        let half_height = 6.5f32.max(6.27 / aspect) / c.zoom;
+        let half_width = half_height * aspect;
         let camera = Mat4::orthographic_rh(
-            0.23 - 6.27 / c.zoom,
-            0.23 + 6.27 / c.zoom,
-            0.5 - 6.5 / c.zoom,
-            0.5 + 6.5 / c.zoom,
+            0.23 - half_width,
+            0.23 + half_width,
+            0.5 - half_height,
+            0.5 + half_height,
             0.1,
             100.,
         ) * Mat4::look_at_rh(Vec3::new(0., 0., 20.), Vec3::ZERO, Vec3::Y);
@@ -376,7 +392,10 @@ impl Renderer {
 
         for draw in &self.draws {
             let model = match draw.part {
-                Part::Body => Mat4::from_scale(Vec3::splat(c.body_scale)),
+                Part::Body => {
+                    Mat4::from_scale(Vec3::splat(c.body_scale))
+                        * draw.body_slot.map_or(Mat4::IDENTITY, |i| deltas[i])
+                }
                 Part::Neck => {
                     root * Mat4::from_translation(Vec3::new(0., -0.25, -0.66))
                         * Mat4::from_scale(Vec3::new(1., 2., 1.))
@@ -391,6 +410,23 @@ impl Renderer {
                         * Mat4::from_translation(-draw.center)
                 }
 
+                Part::ReactionEye { right, expression } => {
+                    let i = if right { 1. } else { 0. };
+                    let time = activity.time as f32;
+                    let (scale, rotation) = if expression == crate::activity::Expression::Stars {
+                        (
+                            1. + 0.08 * (time * 10. + i).sin(),
+                            -0.12 * (time * 3. + i).sin(),
+                        )
+                    } else {
+                        (1., 0.)
+                    };
+                    head * Mat4::from_translation(
+                        draw.center + Vec3::new(0., -0.54 * p.mouth * 0.12, 0.),
+                    ) * Mat4::from_rotation_z(rotation)
+                        * Mat4::from_scale(Vec3::new(scale, scale, 1.))
+                        * Mat4::from_translation(-draw.center)
+                }
                 Part::Interior => {
                     let stretch = 0.54 * p.mouth / (draw.y_bounds[1] - draw.y_bounds[0]).max(0.001);
                     head * Mat4::from_translation(Vec3::new(0., -draw.y_bounds[1] * stretch, 0.))
@@ -438,6 +474,17 @@ impl Renderer {
             });
 
             for draw in &self.draws {
+                match draw.part {
+                    Part::EyeLeft | Part::EyeRight
+                        if activity.expression != crate::activity::Expression::Neutral =>
+                    {
+                        continue;
+                    }
+                    Part::ReactionEye { expression, .. } if expression != activity.expression => {
+                        continue;
+                    }
+                    _ => {}
+                }
                 pass.set_pipeline(if draw.double_sided {
                     &self.pipeline
                 } else {

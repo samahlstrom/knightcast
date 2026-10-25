@@ -113,6 +113,7 @@ fn preview_preserves_rendered_srgb_colors() {
         Assets {
             meshes: vec![],
             report: vec![],
+            rig: crate::rig::Rig::default(),
         },
         8,
         8,

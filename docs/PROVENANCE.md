@@ -30,3 +30,20 @@ The new project may choose MIT or MIT/Apache-2.0 for independently authored appl
 - Actual supplied-art paths and hashes (the spec author did not inspect user files).
 - Implementation dependency/version/license list and hardware-specific validation record.
 - Any claim of capture transparency, live tracker compatibility, or Windows support must have its own test evidence.
+
+## Authorized stream-kit integration (2026-10-25)
+
+The user explicitly requested integration with their existing stream-kit. The
+implementation therefore read and ported the user's own `overlays/desk-rig/skeleton.js`
+and activity/expression behavior from `overlays/knight-puppet.html`, using their
+`overlays/original-rig/rig.json` as an external asset contract. This is authorized
+reuse of the user's existing rig, not reference Windows-application implementation
+access. No VMagicMirror/VSeeFace/VirtualMotionCapture implementation was inspected.
+Private artwork and asset files remain external to this source repository.
+
+OBS Media Source integration used the official OBS `obs-ffmpeg-source.c` settings,
+OBS media-source documentation and FFmpeg protocol documentation, plus isolated
+pixel/alpha tests against the installed OBS. Those are APIs of the integration
+dependencies, not behavioral-reference avatar application source. The source links
+are in the implementation task's evidence and the validation documents; actual
+transparent output was tested rather than inferred from documentation.
