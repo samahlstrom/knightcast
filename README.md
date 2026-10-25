@@ -21,7 +21,7 @@ scripts/run-local.sh --asset-root /path/to/stream-kit --camera 0
 
 Release the camera from its previous owner before using `--camera`. Omitting that option opens only the native app. The helper defaults to MJPEG 1280×720 at 30 FPS, with aspect-preserving 640×360 inference; these match the Pocket 3's enumerated MJPEG modes. Other devices can use the capture helper's explicit format options.
 
-This opens the native settings/preview window only. Camera capture is a separate, explicitly launched process; see [capture documentation](docs/CAPTURE.md) and `scripts/` for available adapters. The app binds only `127.0.0.1:39539` by default. It consumes the [KnightCast JSON bridge](docs/TRACKING_PROTOCOL.md), not raw OpenSeeFace/VMC packets. Choose the tracked face in the adapter.
+Invoking the Rust binary directly opens only the native settings/preview window. The launcher starts the separate camera process only with `--camera`; see [capture documentation](docs/CAPTURE.md). The app binds only `127.0.0.1:39539` by default. It consumes the [KnightCast JSON bridge](docs/TRACKING_PROTOCOL.md), not raw OpenSeeFace/VMC packets. Choose the tracked face in the adapter.
 
 In the window, calibrate neutral while facing forward with your mouth closed, adjust smoothing and framing, then save settings. F1 hides/shows controls. Settings live at `$XDG_CONFIG_HOME/knightcast/config.json` or `~/.config/knightcast/config.json`; `--config PATH` overrides this. Saving uses a temporary file followed by atomic rename. Errors appear in the native UI; an invalid saved configuration falls back to defaults. An asset reload failure retains the previous rendered assets.
 
@@ -55,3 +55,5 @@ The timed run continuously renders and receives UDP; it reports render submissio
 This is an independently implemented native prototype, not full VMagicMirror parity. Live camera/desktop validation must be recorded separately from synthetic/offscreen tests. The body does not yet react to keyboard/mouse activity. Native smile/gaze/wide-eye/surprise rendering, coordinated near/far body motion, output-window capture integration, virtual camera, VRM, packaging and Windows validation are pending. Head-scale and unsupported expression channels are validated but not rendered. The source channel is selected in the adapter; the native app has one custom JSON protocol.
 
 The [behavioral specification](docs/BEHAVIORAL_SPEC.md), [provenance ledger](docs/PROVENANCE.md), [asset contract](docs/KNIGHT_ASSETS.md) and [protocol](docs/TRACKING_PROTOCOL.md) describe the design and evidence boundaries. No reference application's implementation code or binary was inspected for this implementation. Only independently written requirements, standard dependency APIs, and the user's own authorized rig/art were used.
+
+See the [validation record](docs/VALIDATION.md) for build, CI, offscreen GPU, synthetic tracking and stability results, along with the live-camera and desktop checks still outstanding.
