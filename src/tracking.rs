@@ -198,6 +198,9 @@ pub struct Pose {
     pub mouth_baseline: f32,
     pub mouth_gain: f32,
     pub blink: [f32; 2],
+    pub linked_eyes: bool,
+    pub blink_baseline: [f32; 2],
+    pub blink_smoothing_ms: f32,
 }
 impl Default for Pose {
     fn default() -> Self {
@@ -209,6 +212,9 @@ impl Default for Pose {
             mouth_baseline: 0.,
             mouth_gain: 3.8,
             blink: [0.; 2],
+            linked_eyes: true,
+            blink_baseline: [0.; 2],
+            blink_smoothing_ms: 35.,
         }
     }
 }
@@ -227,17 +233,37 @@ pub fn smooth(a: Quat, mut b: Quat, dt: f32, tau: f32) -> Quat {
     .normalize()
 }
 impl Pose {
-    pub fn calibrate(&mut self, s: &Snapshot, now: f64, grace: f32) -> bool {
-        if let Some((p, t)) = &s.valid
-            && now - t <= grace as f64
-            && s.latest.as_ref().is_some_and(|(p, _)| p.tracked)
-        {
-            self.neutral = Quat::from_array(p.rotation);
-            self.mouth_baseline = p.mouth_open;
-            return true;
+    pub fn calibrate_samples(&mut self, samples: &[Packet]) -> bool {
+        if samples.len() < 12 || samples.iter().any(|p| !p.tracked) {
+            return false;
         }
-        false
+        let reference = Quat::from_array(samples[0].rotation);
+        let mut sum = glam::Vec4::ZERO;
+        for p in samples {
+            let mut q = Quat::from_array(p.rotation);
+            if reference.dot(q) < 0. {
+                q = -q;
+            }
+            sum += glam::Vec4::from_array(q.to_array());
+        }
+        if !sum.is_finite() || sum.length() < 0.000001 {
+            return false;
+        }
+        self.neutral = Quat::from_array(sum.normalize().to_array());
+        let percentile = |channel: fn(&Packet) -> f32| {
+            let mut values: Vec<_> = samples.iter().map(channel).collect();
+            values.sort_by(f32::total_cmp);
+            values[(values.len() - 1) / 5]
+        };
+        self.mouth_baseline = percentile(|p| p.mouth_open);
+        self.blink_baseline = [
+            percentile(|p| p.blink_left).min(0.8),
+            percentile(|p| p.blink_right).min(0.8),
+        ];
+        self.blink = [0.; 2];
+        true
     }
+
     pub fn update(&mut self, s: &Snapshot, now: f64, dt: f32, tau: f32, grace: f32, ret: f32) {
         let Some((p, t)) = &s.valid else {
             self.state = State::Waiting;
@@ -263,9 +289,32 @@ impl Pose {
             let target = self.neutral.inverse() * Quat::from_array(p.rotation);
             self.current = smooth(self.current, target, dt, tau);
             self.mouth = mouth_response(p.mouth_open, self.mouth_baseline, self.mouth_gain);
-            self.blink = [p.blink_left, p.blink_right]
+            let mut target = [
+                blink_response(p.blink_left, self.blink_baseline[0]),
+                blink_response(p.blink_right, self.blink_baseline[1]),
+            ];
+            if self.linked_eyes {
+                // With an off-center camera the far eye can appear half closed.
+                // Follow the more-open eye, and keep BOTH displayed eyes equal.
+                target = [target[0].min(target[1]); 2];
+                self.blink = [self.blink[0].min(self.blink[1]); 2];
+            }
+            let alpha = if self.blink_smoothing_ms <= 0. {
+                1.
+            } else {
+                1. - (-dt.max(0.) / (self.blink_smoothing_ms / 1000.)).exp()
+            };
+            for (value, target) in self.blink.iter_mut().zip(target) {
+                *value += (target - *value) * alpha;
+            }
         }
     }
+}
+pub fn blink_response(raw: f32, baseline: f32) -> f32 {
+    let baseline = baseline.clamp(0., 0.8);
+    let normalized = ((raw - baseline) / (1. - baseline)).clamp(0., 1.);
+    let t = ((normalized - 0.2) / 0.6).clamp(0., 1.);
+    t * t * (3. - 2. * t)
 }
 pub fn mouth_response(raw: f32, baseline: f32, gain: f32) -> f32 {
     let x = (raw - baseline - 0.006).max(0.);
@@ -321,7 +370,7 @@ mod tests {
                 1.,
             );
             let mut p = Pose::default();
-            assert!(p.calibrate(&s, 1., 0.25));
+            assert!(p.calibrate_samples(&vec![s.valid.as_ref().unwrap().0.clone(); 12]));
             p.update(&s, 1., 0.1, 0., 0.25, 0.4);
             assert!(p.current.angle_between(Quat::IDENTITY) < 0.001);
             let next = q * Quat::from_rotation_y(0.1);
@@ -438,6 +487,79 @@ mod tests {
         assert_eq!(mouth_response(0.105, 0.1, 3.8), 0.);
         assert!(mouth_response(0.3, 0.1, 3.8) > mouth_response(0.3, 0.1, 1.));
         assert_eq!(mouth_response(1., 0., 3.8), 1.);
+    }
+    fn advance_eyes(pose: &mut Pose, eyes: [f32; 2], hz: u32, frames: u32) {
+        let mut s = Snapshot::default();
+        for frame in 0..frames {
+            let t = frame as f64 / hz as f64;
+            s.publish(
+                &bytes(Packet {
+                    blink_left: eyes[0],
+                    blink_right: eyes[1],
+                    ..Packet::default()
+                }),
+                t,
+            );
+            pose.update(&s, t, 1. / hz as f32, 0.025, 0.25, 0.4);
+        }
+    }
+    #[test]
+    fn linked_eyes_reject_side_camera_asymmetry_and_open_eye_jitter() {
+        let mut p = Pose::default();
+        for near_eye in [0., 0.1, 0.19, 0.05] {
+            advance_eyes(&mut p, [0.87, near_eye], 144, 12);
+            assert_eq!(p.blink, [0., 0.]);
+        }
+        p.linked_eyes = false;
+        advance_eyes(&mut p, [0.9, 0.], 60, 12);
+        assert!(p.blink[0] > 0.95 && p.blink[1] == 0.);
+        p.linked_eyes = true;
+        advance_eyes(&mut p, [0.9, 0.], 60, 1);
+        assert_eq!(p.blink[0], p.blink[1]);
+    }
+    #[test]
+    fn eye_smoothing_rejects_spike_but_preserves_full_blink() {
+        let mut p = Pose::default();
+        advance_eyes(&mut p, [1., 1.], 144, 1);
+        assert!(p.blink[0] < 0.2);
+        advance_eyes(&mut p, [1., 1.], 144, 16);
+        assert!(p.blink[0] > 0.95);
+        advance_eyes(&mut p, [0., 0.], 144, 16);
+        assert!(p.blink[0] < 0.05);
+        for hz in [30, 60, 144] {
+            let mut p = Pose::default();
+            advance_eyes(&mut p, [1., 1.], hz, hz);
+            assert!(p.blink[0] > 0.999);
+        }
+    }
+    #[test]
+    fn multi_sample_calibration_ignores_incidental_blinks_and_quaternion_signs() {
+        let q = Quat::from_euler(glam::EulerRot::YXZ, 0.3, 0.1, -0.2);
+        let mut samples = vec![
+            Packet {
+                rotation: q.to_array(),
+                mouth_open: 0.03,
+                blink_left: 0.6,
+                blink_right: 0.1,
+                ..Packet::default()
+            };
+            30
+        ];
+        samples[0].rotation = (-q).to_array();
+        for sample in &mut samples[10..13] {
+            sample.blink_left = 1.;
+            sample.blink_right = 1.;
+        }
+        let mut p = Pose::default();
+        assert!(!p.calibrate_samples(&samples[..3]));
+        assert!(p.calibrate_samples(&samples));
+        assert!(p.neutral.angle_between(q) < 0.001);
+        assert_eq!(p.blink_baseline, [0.6, 0.1]);
+        assert_eq!(p.mouth_baseline, 0.03);
+        advance_eyes(&mut p, [0.65, 0.13], 60, 30);
+        assert_eq!(p.blink, [0., 0.]);
+        advance_eyes(&mut p, [1., 1.], 60, 12);
+        assert!(p.blink[0] > 0.99 && p.blink[0] == p.blink[1]);
     }
     #[test]
     fn real_loopback_latest() {

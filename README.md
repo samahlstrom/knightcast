@@ -23,7 +23,11 @@ Release the camera from its previous owner before using `--camera`. Omitting tha
 
 Invoking the Rust binary directly opens only the native settings/preview window. The launcher starts the separate camera process only with `--camera`; see [capture documentation](docs/CAPTURE.md). The app binds only `127.0.0.1:39539` by default. It consumes the [KnightCast JSON bridge](docs/TRACKING_PROTOCOL.md), not raw OpenSeeFace/VMC packets. Choose the tracked face in the adapter.
 
-In the window, calibrate neutral while facing forward with your mouth closed, adjust smoothing and framing, then save settings. F1 hides/shows controls. Settings live at `$XDG_CONFIG_HOME/knightcast/config.json` or `~/.config/knightcast/config.json`; `--config PATH` overrides this. Saving uses a temporary file followed by atomic rename. Errors appear in the native UI; an invalid saved configuration falls back to defaults. An asset reload failure retains the previous rendered assets.
+Click **Calibrate face (2 seconds)** while looking normally at your screen with eyes comfortably open and lips together. Calibration samples your resting head, eyes and mouth, ignoring incidental blinks. **Keep both eyes in sync** is enabled by default for off-center cameras; disable it for independent winks. Eye smoothing is separate from head smoothing.
+
+**Reset avatar size and position** restores framing without clearing face calibration. **Reload saved settings** restores the last saved configuration. **Reset all settings to defaults** clears tuning and face calibration while keeping the asset folder and tracking port; click **Save settings** to persist changes. Connection settings and technical diagnostics are collapsed below the everyday controls. F1 hides/shows controls.
+
+Settings live at `$XDG_CONFIG_HOME/knightcast/config.json` or `~/.config/knightcast/config.json`; `--config PATH` overrides this. Saving uses a temporary file followed by atomic rename. Errors appear in the native UI; an invalid saved configuration falls back to defaults. An asset reload failure retains the previous rendered assets.
 
 ## Offscreen verification
 

@@ -94,6 +94,9 @@ fn main() -> Result<()> {
         let receiver = tracking::Receiver::bind(config.port)
             .with_context(|| format!("bind loopback UDP port {}", config.port))?;
         let mut pose = tracking::Pose {
+            linked_eyes: config.linked_eyes,
+            blink_baseline: config.blink_baseline,
+            blink_smoothing_ms: config.blink_smoothing_ms,
             mouth_gain: config.mouth_gain,
             mouth_baseline: config.mouth_baseline,
             ..Default::default()
@@ -202,6 +205,8 @@ fn main() -> Result<()> {
                 accepted_last: 0,
                 cap: args.fps,
                 output_only: false,
+                notice: String::new(),
+                calibration: None,
             };
             app.pose.neutral = glam::Quat::from_array(app.config.neutral).normalize();
             app.reload();
@@ -226,8 +231,66 @@ struct App {
     accepted_last: u64,
     cap: u32,
     output_only: bool,
+    notice: String,
+    calibration: Option<Calibration>,
+}
+struct Calibration {
+    started: Instant,
+    last_sample: Option<f64>,
+    samples: Vec<tracking::Packet>,
 }
 impl App {
+    fn start_calibration(&mut self) {
+        self.calibration = Some(Calibration {
+            started: Instant::now(),
+            last_sample: None,
+            samples: vec![],
+        });
+        self.notice = "Look normally at your screen, eyes comfortably open and lips together for two seconds.".into();
+        self.errors.clear();
+    }
+
+    fn update_calibration(&mut self, s: &tracking::Snapshot, time: f64) {
+        let Some(calibration) = &mut self.calibration else {
+            return;
+        };
+        if let Some((packet, received)) = &s.valid
+            && time - received <= self.config.grace_ms as f64 / 1000.
+            && calibration.last_sample != Some(*received)
+            && s.latest.as_ref().is_some_and(|(p, _)| p.tracked)
+        {
+            calibration.samples.push(packet.clone());
+            calibration.last_sample = Some(*received);
+        }
+        if calibration.started.elapsed().as_secs_f32() >= 2. {
+            let calibration = self.calibration.take().unwrap();
+            if self.pose.calibrate_samples(&calibration.samples) {
+                self.config.neutral = self.pose.neutral.to_array();
+                self.config.mouth_baseline = self.pose.mouth_baseline;
+                self.config.blink_baseline = self.pose.blink_baseline;
+                self.notice =
+                    "Face calibrated. Resting eyes, mouth and head position updated.".into();
+            } else {
+                self.notice =
+                    "Not enough face samples. Face the camera and try Calibrate face again.".into();
+            }
+        }
+    }
+
+    fn reconnect(&mut self) {
+        self.receiver = None;
+        self.accepted_last = 0;
+        self.packet_rate = 0.;
+        self.rate_last = Instant::now();
+        match tracking::Receiver::bind(self.config.port) {
+            Ok(r) => {
+                self.receiver = Some(r);
+                self.notice = "Tracking connection reopened. Waiting for camera data.".into();
+            }
+            Err(e) => self.errors.push(format!("Tracking connection: {e}")),
+        }
+    }
+
     fn reload(&mut self) {
         match assets::Assets::load(std::path::Path::new(&self.config.asset_root)) {
             Ok(assets) => {
@@ -271,6 +334,10 @@ impl eframe::App for App {
             .as_ref()
             .map(|r| r.origin.elapsed().as_secs_f64())
             .unwrap_or(0.);
+        self.update_calibration(&s, time);
+        self.pose.linked_eyes = self.config.linked_eyes;
+        self.pose.blink_baseline = self.config.blink_baseline;
+        self.pose.blink_smoothing_ms = self.config.blink_smoothing_ms;
         self.pose.mouth_gain = self.config.mouth_gain;
         self.pose.mouth_baseline = self.config.mouth_baseline;
         self.pose.update(
@@ -291,109 +358,104 @@ impl eframe::App for App {
             self.output_only = !self.output_only
         }
         if !self.output_only {
-            egui::SidePanel::left("controls").default_width(310.).show(ctx,|ui|{
-egui::ScrollArea::vertical().show(ui,|ui|{
-ui.heading("KnightCast");
-ui.label("Native GPU · local UDP · F1 hides controls");
-ui.separator();
-ui.strong(format!("{:?} · {:.0} FPS · {:.1} packets/s",self.pose.state,self.fps,self.packet_rate));
-if let Some((p,t))=&s.valid{
-ui.label(format!("Last valid: {:.0} ms · capture {:.0} ms · inference {:.0} ms",(time-t)*1000.,p.capture_age_ms,p.inference_ms));
-ui.label(format!("Sequence {} · mouth {:.2}",p.seq,p.mouth_open));
-}
-ui.label(format!("Accepted {} / rejected {} / superseded {} / sequence resets {}",s.accepted,s.rejected,s.superseded,s.restarts));
-if let Some(gpu)=&self.gpu{
-ui.small(&gpu.backend);
-for line in &gpu.report{
-ui.small(line);
-}
-}
-
-if let Some(e)=&s.error{
-ui.colored_label(egui::Color32::RED,e);
-}
-
- if ui.button("Calibrate neutral (mouth closed)").clicked(){
-if self.pose.calibrate(&s,time,self.config.grace_ms/1000.){
-self.config.neutral=self.pose.neutral.to_array();
-self.config.mouth_baseline=self.pose.mouth_baseline}
-else{
-self.errors.push("Calibration requires a fresh tracked sample".into())}
-}
-
- ui.add(egui::Slider::new(&mut self.config.smoothing_ms,0. ..=300.).text("Smoothing ms"));
-ui.add(egui::Slider::new(&mut self.config.grace_ms,0. ..=1000.).text("Grace ms"));
-ui.add(egui::Slider::new(&mut self.config.return_ms,0. ..=1500.).text("Return ms"));
-
- ui.add(egui::Slider::new(&mut self.config.mouth_gain,0.1..=10.).text("Mouth sensitivity"));
-
- ui.separator();
-ui.label("External stream-kit asset root");
-ui.text_edit_singleline(&mut self.config.asset_root);
-if ui.button("Reload original assets").clicked(){
-self.reload()}
-
- ui.label("Protocol: KnightCast JSON v1 (selected face at sender)");
-ui.add(egui::DragValue::new(&mut self.config.port).range(1..=65535).prefix("UDP port "));
-if ui.button("Reconnect receiver").clicked(){
-self.receiver=None;
-self.accepted_last=0;
-self.packet_rate=0.;
-self.rate_last=Instant::now();
-match tracking::Receiver::bind(self.config.port){
-Ok(r)=>{
-self.receiver=Some(r);
-self.accepted_last=0;
-self.pose.state=tracking::State::Waiting}
-,Err(e)=>self.errors.push(format!("UDP: {e}"))}
-}
-
- ui.collapsing("Model and framing",|ui|{
-ui.add(egui::Slider::new(&mut self.config.model_scale,0.5..=1.5).text("Helmet scale"));
-ui.add(egui::Slider::new(&mut self.config.body_scale,0.5..=1.5).text("Body scale"));
-ui.add(egui::Slider::new(&mut self.config.zoom,0.5..=2.).text("Camera zoom"));
-for (i,label) in ["Offset X","Offset Y"].iter().enumerate(){
-ui.add(egui::DragValue::new(&mut self.config.offset[i]).speed(0.01).prefix(*label));
-}
-for (i,label) in ["Base yaw ","Base pitch ","Base roll "].iter().enumerate(){
-ui.add(egui::DragValue::new(&mut self.config.base_degrees[i]).speed(0.2).prefix(*label));
-}
-for (i,label) in ["Pivot X ","Pivot Y ","Pivot Z "].iter().enumerate(){
-ui.add(egui::DragValue::new(&mut self.config.pivot[i]).speed(0.01).prefix(*label));
-}
-ui.label("Background RGBA (output texture only)");
-ui.color_edit_button_rgba_unmultiplied(&mut self.config.background);
-}
-);
-
- ui.horizontal(|ui|{
-if ui.button("Save settings").clicked() && let Err(e)=self.config.save(&self.path){
-self.errors.push(format!("Save: {e:#}"))}
-
-if ui.button("Reset transforms").clicked(){
-let root=self.config.asset_root.clone();
-let port=self.config.port;
-self.config=config::Config{
-asset_root:root,port,..Default::default()}
-;
-self.pose.neutral=glam::Quat::IDENTITY;
-}
-}
-);
-ui.small(self.path.display().to_string());
-for error in &self.errors{
-ui.colored_label(egui::Color32::LIGHT_RED,error);
-}
-
-if !self.errors.is_empty()&&ui.button("Clear messages").clicked(){
-self.errors.clear();
-}
-ui.separator();
-ui.small("Prototype: rigid body. Jaw and blink. Gaze/smile/wide/surprise, arm activity and capture integration pending. Camera is a separately launched adapter.");
-}
-);
-}
-);
+            egui::SidePanel::left("controls").default_width(330.).show(ctx, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    ui.heading("KnightCast");
+                    let status = match self.pose.state {
+                        tracking::State::Tracking => "Face tracking active",
+                        tracking::State::Grace => "Reacquiring face…",
+                        tracking::State::Lost => "Face not found",
+                        tracking::State::Waiting => "Waiting for camera tracking",
+                    };
+                    ui.strong(status);
+                    ui.label("F1 hides or shows these controls.");
+                    ui.separator();
+                    if ui.add_enabled(self.calibration.is_none(), egui::Button::new("Calibrate face (2 seconds)").min_size(egui::vec2(0.,32.))).clicked() {
+                        self.start_calibration();
+                    }
+                    ui.small("Sets your normal head position and resting eyes/mouth.");
+                    if let Some(c) = &self.calibration {
+                        ui.add(egui::ProgressBar::new((c.started.elapsed().as_secs_f32()/2.).min(1.)).text("Look normally at your screen"));
+                    }
+                    if !self.notice.is_empty() { ui.label(&self.notice); }
+                    ui.separator();
+                    ui.strong("Eyes and movement");
+                    ui.checkbox(&mut self.config.linked_eyes, "Keep both eyes in sync")
+                        .on_hover_text("Recommended for a camera off to one side. Prevents the farther eye staying smaller; both eyes blink together. Turn off for independent winks.");
+                    ui.add(egui::Slider::new(&mut self.config.blink_smoothing_ms, 0. ..=100.).text("Eye smoothing (ms)"));
+                    ui.add(egui::Slider::new(&mut self.config.smoothing_ms, 0. ..=150.).text("Head smoothing (ms)"));
+                    ui.add(egui::Slider::new(&mut self.config.mouth_gain,0.1..=10.).text("Mouth sensitivity"));
+                    ui.separator();
+                    ui.strong("Avatar size and position");
+                    ui.add(egui::Slider::new(&mut self.config.zoom,0.5..=2.).text("Overall zoom"));
+                    ui.add(egui::Slider::new(&mut self.config.model_scale,0.5..=1.5).text("Helmet size"));
+                    ui.add(egui::Slider::new(&mut self.config.body_scale,0.5..=1.5).text("Body size"));
+                    if ui.button("Reset avatar size and position").clicked() {
+                        self.config.reset_framing();
+                        self.notice = "Original avatar framing restored. Face calibration and tracking settings kept.".into();
+                    }
+                    ui.collapsing("Advanced positioning", |ui| {
+                        for (i,label) in ["Offset X ","Offset Y "].iter().enumerate() { ui.add(egui::DragValue::new(&mut self.config.offset[i]).speed(0.01).prefix(*label)); }
+                        for (i,label) in ["Base yaw ","Base pitch ","Base roll "].iter().enumerate() { ui.add(egui::DragValue::new(&mut self.config.base_degrees[i]).speed(0.2).prefix(*label)); }
+                        for (i,label) in ["Pivot X ","Pivot Y ","Pivot Z "].iter().enumerate() { ui.add(egui::DragValue::new(&mut self.config.pivot[i]).speed(0.01).prefix(*label)); }
+                        ui.label("Background color / transparency");
+                        ui.color_edit_button_rgba_unmultiplied(&mut self.config.background);
+                    });
+                    ui.separator();
+                    ui.strong("Settings");
+                    ui.horizontal(|ui| {
+                        if ui.button("Save settings").clicked() {
+                            match self.config.save(&self.path) {
+                                Ok(()) => self.notice = "Settings saved.".into(),
+                                Err(e) => self.errors.push(format!("Save: {e:#}")),
+                            }
+                        }
+                        if ui.button("Reload saved settings").clicked() {
+                            match config::Config::load(&self.path) {
+                                Ok(config) => {
+                                    self.config = config;
+                                    self.pose = tracking::Pose { neutral: glam::Quat::from_array(self.config.neutral).normalize(), ..Default::default() };
+                                    self.calibration = None;
+                                    self.reconnect(); self.reload();
+                                    self.notice = "Saved settings restored.".into();
+                                }
+                                Err(e) => self.errors.push(format!("Reload settings: {e:#}")),
+                            }
+                        }
+                    });
+                    if ui.button("Reset all settings to defaults").clicked() {
+                        self.config.reset_all();
+                        self.pose = tracking::Pose::default();
+                        self.calibration = None;
+                        self.notice = "All settings reset; avatar files and tracking connection kept. Calibrate face, then Save settings when ready.".into();
+                        self.errors.clear();
+                    }
+                    ui.small("Reset changes are saved only when you click Save settings.");
+                    ui.collapsing("Camera connection and avatar files", |ui| {
+                        ui.label("Camera capture runs in the separate native capture process.");
+                        ui.add(egui::DragValue::new(&mut self.config.port).range(1..=65535).prefix("Tracking port "));
+                        if ui.button("Reconnect tracking").clicked() { self.reconnect(); }
+                        ui.add(egui::Slider::new(&mut self.config.grace_ms,0. ..=1000.).text("Hold during brief loss (ms)"));
+                        ui.add(egui::Slider::new(&mut self.config.return_ms,0. ..=1500.).text("Return to neutral (ms)"));
+                        ui.label("Avatar asset folder");
+                        ui.text_edit_singleline(&mut self.config.asset_root);
+                        if ui.button("Reload avatar files").clicked() { self.reload(); }
+                    });
+                    ui.collapsing("Diagnostics", |ui| {
+                        ui.label(format!("{:.0} preview FPS · {:.1} tracking samples/s",self.fps,self.packet_rate));
+                        if let Some((p,t)) = &s.valid {
+                            ui.label(format!("Last pose {:.0} ms · capture {:.0} ms · inference {:.0} ms",(time-t)*1000.,p.capture_age_ms,p.inference_ms));
+                            ui.label(format!("Raw eyes {:.2} / {:.2} · shown {:.2} / {:.2}",p.blink_left,p.blink_right,self.pose.blink[0],self.pose.blink[1]));
+                        }
+                        ui.label(format!("Accepted {} · rejected {} · superseded {}",s.accepted,s.rejected,s.superseded));
+                        if let Some(gpu) = &self.gpu { ui.small(&gpu.backend); for line in &gpu.report { ui.small(line); } }
+                        ui.small(self.path.display().to_string());
+                    });
+                    if let Some(e) = &s.error { ui.colored_label(egui::Color32::LIGHT_RED,e); }
+                    for error in &self.errors { ui.colored_label(egui::Color32::LIGHT_RED,error); }
+                    if !self.errors.is_empty() && ui.button("Dismiss old messages").clicked() { self.errors.clear(); }
+                });
+            });
         }
         if let Some(gpu) = &self.gpu {
             gpu.render(&self.config, &self.pose)
