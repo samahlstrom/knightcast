@@ -37,3 +37,11 @@ A read-only camera mode query identified the Pocket 3's MJPEG modes as 720p/1080
 - No visible native window was opened. Wayland desktop presentation, window capture, OBS alpha/transparency and OBS integration remain unverified. Existing OBS scenes, services and windows were left intact.
 - The first native body pose is static. Mouse/keyboard arm and finger animation, gaze/smile/surprise rendering, near/far torso movement, VRM import and Windows support are not complete.
 - The application/renderer is Rust; camera inference is a separate local Python/OpenSeeFace process. Models and personal artwork are external inputs, not bundled release assets.
+
+## Subsequent live preview and color correction
+
+After the initial record above, the user requested a live trial. The Pocket 3 was released from the old browser tracker and opened by the native capture helper. The device accepted MJPEG 1280×720 at 30 FPS; logs showed measured capture at approximately 30 FPS, valid face poses and approximately 10–14 ms inference durations. The native desktop preview was visually verified receiving approximately 30 packets/second. These timings still exclude sensor exposure, hidden driver buffering and final display presentation. OBS capture integration remains unverified.
+
+The first desktop preview revealed a color-path error that offscreen screenshots did not catch: egui was given an sRGB texture view, decoding already-encoded scene output before treating it as gamma-encoded color. The preview now receives an `Rgba8Unorm` view of the same output texture. Scene rendering, input textures and PNG export retain their existing sRGB handling.
+
+The explicit GPU regression test `preview_preserves_rendered_srgb_colors` renders gray, green, red and silver/blue swatches through the actual egui shader. It verifies the preview against the scene bytes within one 8-bit channel value on both linear-format and sRGB-format output attachments. A negative control using the previous view reproduces the darkening. Run it without a window using `cargo test --locked preview_preserves_rendered_srgb_colors -- --ignored`; it is excluded from ordinary CPU-only CI because it requires a GPU.

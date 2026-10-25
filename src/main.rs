@@ -1,5 +1,7 @@
 mod assets;
 mod config;
+#[cfg(test)]
+mod preview_tests;
 mod renderer;
 mod tracking;
 use anyhow::{Context, Result};
@@ -244,7 +246,7 @@ impl App {
                 }
                 self.texture = Some(renderer.register_native_texture(
                     &gpu.device,
-                    &gpu.view,
+                    &gpu.preview_view(),
                     wgpu::FilterMode::Linear,
                 ));
                 self.gpu = Some(gpu);

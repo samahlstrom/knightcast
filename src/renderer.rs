@@ -89,7 +89,7 @@ impl Renderer {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT
                 | wgpu::TextureUsages::TEXTURE_BINDING
                 | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
+            view_formats: &[wgpu::TextureFormat::Rgba8Unorm],
         });
 
         let view = texture.create_view(&Default::default());
@@ -325,6 +325,17 @@ impl Renderer {
             backend,
             report: assets.report,
         }
+    }
+
+    /// egui's image shader consumes gamma-encoded color values. The scene is
+    /// already encoded by its sRGB render attachment, so sample those bytes
+    /// through a non-sRGB view rather than decoding them a second time.
+    pub fn preview_view(&self) -> wgpu::TextureView {
+        self.texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("egui gamma-encoded preview"),
+            format: Some(wgpu::TextureFormat::Rgba8Unorm),
+            ..Default::default()
+        })
     }
 
     pub fn render(&self, c: &Config, p: &Pose) {
